@@ -115,8 +115,8 @@ def train(locs_known, edge_list, num_iters, dispersion_threshold=50):
 
     for i in range(num_iters):
         l = edge_list.leftOuterJoin(l)\
+        .filter(lambda (src_id, ((dst_id, weight), known_vertex)): known_vertex != None)\
         .map(lambda (src_id, ((dst_id, weight), known_vertex)) : (dst_id, (known_vertex, weight)))\
-        .filter(lambda (dst_id, (known_vertex, weight) ): known_vertex != None)\
         .groupByKey()\
         .filter(lambda (src_id, neighbors) : neighbors.maxindex > NEIGHBOR_THRESHOLD)\
         .leftOuterJoin(locs_known)\
@@ -126,10 +126,10 @@ def train(locs_known, edge_list, num_iters, dispersion_threshold=50):
         .filter(lambda (src_id, (median_vertex, neighbors)) :\
               dispersion(haversine, median_vertex.geo_coord,\
                          [vtx.geo_coord for (vtx,weight) in neighbors]) < dispersion_threshold)\
-        .flatMapValues(lambda (src_id, (median_vertex, neighbors)) : median_vertex)\
+        .map(lambda (src_id, (median_vertex, neighbors)) : (src_id, median_vertex))\
         .union(locs_known)
 
-    return l
+return l
 
 
 
