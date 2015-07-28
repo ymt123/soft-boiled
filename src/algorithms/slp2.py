@@ -53,7 +53,7 @@ def median(distance_func, vertices, weights=None):
 
     idx = summed_values.index(min(summed_values))
 
-    return Vertex(id=vertices[idx].id, geo_coord=vertices[idx].geo_coord, dispersion=np.median(m[idx]), dispersion_std_dev=np.std(m[idx]))
+    return LocEstimate(geo_coord=vertices[idx].geo_coord, dispersion=np.median(m[idx]), dispersion_std_dev=np.std(m[idx]))
 
 
 def get_known_locs(table_name, min_locs=3):
