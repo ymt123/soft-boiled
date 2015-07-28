@@ -4,12 +4,7 @@ import itertools
 from collections import namedtuple
 
 GeoCoord = namedtuple('GeoCoord', ['lat', 'lon'])
-Vertex = namedtuple('Vertex', ['id', 'geo_coord'])
-
-def dispersion(distance_func, geo_source, geo_neighbors):
-    distances = map(lambda geo_neighbor: distance_func(geo_source,geo_neighbor), geo_neighbors)
-    arr = np.array(distances)
-    return np.median(arr)
+LocEstimate = namedtuple('LocEstimate', ['geo_coord', 'dispersion', 'dispersion_std_dev'])
 
 EARTH_RADIUS = 6367
 def haversine(x, y):
@@ -56,7 +51,9 @@ def median(distance_func, vertices, weights=None):
 
     summed_values = map(sum, m.itervalues())
 
-    return vertices[summed_values.index(min(summed_values))]
+    idx = summed_values.index(min(summed_values))
+
+    return Vertex(id=vertices[idx].id, geo_coord=vertices[idx].geo_coord, dispersion=np.median(m[idx]), dispersion_std_dev=np.std(m[idx]))
 
 
 def get_known_locs(table_name, min_locs=3):
@@ -67,8 +64,8 @@ def get_known_locs(table_name, min_locs=3):
     '''
     return sqlCtx.sql('select user.id_str, geo.coordinates from %s where geo.coordinates is not null' % table_name)\
         .map(lambda row: (row.id_str, row.coordinates)).groupByKey()\
-        .filter(lambda (id_str,coord_list): len(coord_list) > 3)\
-            .map(lambda (id_str,coords): (id_str, median(haversine, [Vertex(id_str, GeoCoord(lat,lon)) for lat,lon in coords]))).cache()
+        .filter(lambda (id_str,coord_list): len(coord_list) > min_locs)\
+            .map(lambda (id_str,coords): (id_str, median(haversine, [LocEstimate(GeoCoord(lat,lon), None, None) for lat,lon in coords]))).cache()
 
 
 def get_edge_list(table_name):
@@ -122,16 +119,11 @@ def train(locs_known, edge_list, num_iters, dispersion_threshold=50):
         .leftOuterJoin(locs_known)\
         .filter(lambda (src_id, (neighbors, hasLoc)) : hasLoc is None)\
         .map(lambda (src_id, (neighbors, locLoc)) :\
-           (src_id, (median(haversine, [v for v,w in neighbors],[w for v,w in neighbors]), neighbors)))\
-        .filter(lambda (src_id, (median_vertex, neighbors)) :\
-              dispersion(haversine, median_vertex.geo_coord,\
-                         [vtx.geo_coord for (vtx,weight) in neighbors]) < dispersion_threshold)\
-        .map(lambda (src_id, (median_vertex, neighbors)) : (src_id, median_vertex))\
+           (src_id, median(haversine, [v for v,w in neighbors],[w for v,w in neighbors])))\
+        .filter(lambda (src_id, vertex): vertex.dispersion < dispersion_threshold)\
         .union(locs_known)
 
-        #might want to readjust the vertex ids since lineage is shown
-        return l
-
+    return l
 
 def run_test(locs_known, edge_list,  holdout_func, num_iters=1, dispersion_threshold=50):
     '''
