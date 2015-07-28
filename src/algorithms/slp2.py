@@ -109,25 +109,26 @@ def train(locs_known, edge_list, num_iters, dispersion_threshold=50):
   line 9:  prepare for the union by adjusting format...                (dst_id, median_coord)
   line 8:  union to create the global location rdd...                  (dst_id, median_geoCoord)
   '''
-    NEIGHBOR_THRESHOLD = 2
+NEIGHBOR_THRESHOLD = 2
 
-    l = locs_known
+l = locs_known
 
-    for i in range(num_iters):
-        l = edge_list.leftOuterJoin(l)\
-        .filter(lambda (src_id, ((dst_id, weight), known_vertex)): known_vertex != None)\
-        .map(lambda (src_id, ((dst_id, weight), known_vertex)) : (dst_id, (known_vertex, weight)))\
-        .groupByKey()\
-        .filter(lambda (src_id, neighbors) : neighbors.maxindex > NEIGHBOR_THRESHOLD)\
-        .leftOuterJoin(locs_known)\
-        .filter(lambda (src_id, (neighbors, hasLoc)) : hasLoc is None)\
-        .map(lambda (src_id, (neighbors, locLoc)) :\
-           (src_id, (median(haversine, [v for v,w in neighbors],[w for v,w in neighbors]), neighbors)))\
-        .filter(lambda (src_id, (median_vertex, neighbors)) :\
-              dispersion(haversine, median_vertex.geo_coord,\
-                         [vtx.geo_coord for (vtx,weight) in neighbors]) < dispersion_threshold)\
-        .map(lambda (src_id, (median_vertex, neighbors)) : (src_id, median_vertex))\
-        .union(locs_known)
+for i in range(num_iters):
+    l = edge_list.join(l)\
+    .map(lambda (src_id, ((dst_id, weight), known_vertex)) : (dst_id, (known_vertex, weight)))\
+    .groupByKey()\
+    .filter(lambda (src_id, neighbors) : neighbors.maxindex > NEIGHBOR_THRESHOLD)\
+    .leftOuterJoin(locs_known)\
+    .filter(lambda (src_id, (neighbors, hasLoc)) : hasLoc is None)\
+    .map(lambda (src_id, (neighbors, locLoc)) :\
+       (src_id, (median(haversine, [v for v,w in neighbors],[w for v,w in neighbors]), neighbors)))\
+    .filter(lambda (src_id, (median_vertex, neighbors)) :\
+          dispersion(haversine, median_vertex.geo_coord,\
+                     [vtx.geo_coord for (vtx,weight) in neighbors]) < dispersion_threshold)\
+    .map(lambda (src_id, (median_vertex, neighbors)) : (src_id, median_vertex))\
+    .union(locs_known)
+                              
+    #might want to readjust the vertex ids since lineage is shown
 
 return l
 
