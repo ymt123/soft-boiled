@@ -50,6 +50,84 @@ def median(distance_func, vertices, weights=None):
 
     return LocEstimate(geo_coord=vertices[idx].geo_coord, dispersion=np.median(m[idx]), dispersion_std_dev=np.std(m[idx]))
 
+def collapse_rows(rows, min_locs, dispersion_threshold):
+    '''
+    Enable us to take the output from a spark sql query and simultaneously extract the estimated locations and contact
+    counts
+    Args:
+        rows (pypsark Row): output of spark sql query
+        min_locs (int) : Minimum number tweets that have a location in order to infer a location for the user
+        dispersion_threshold (int) : A distance threhold on the dispersion of the estimated location for a user.
+            We consider those estimated points with dispersion greater than the treshold unable to be
+            predicted given how dispersed the tweet distances are from one another.
+
+    Returns:
+
+    '''
+    mention_count = defaultdict(int)
+    geo_coords = []
+    for row in rows:
+        # Aggregate geo locations to calcuate median position
+        if row.geo is not None:
+            lat,lon = row.geo
+            geo_coords.append(LocEstimate(GeoCoord(lat,lon), None, None))
+        elif row.place is not None and row.place_type in ['city', 'neighborhood', 'poi']:
+            lat,lon = bb_center(row.place)
+            geo_coords.append(LocEstimate(GeoCoord(lat,lon), None, None))
+        # Count user @mentions
+        if len(row.mentions) > 0:
+            for mention in row.mentions:
+                mention_count[long(mention)] += 1
+    if len(geo_coords) >= min_locs:
+        loc_estimate = median(haversine, geo_coords)
+        if dispersion_threshold is not None and loc_estimate.dispersion > dispersion_threshold:
+            loc_estimate = None
+    else:
+        loc_estimate = None
+    return (loc_estimate, mention_count)
+
+def get_locs_and_edges(sqlCtx, table_name, min_locs=3, num_partitions=30, dispersion_threshold=50):
+    '''
+    Simultaneously get both the known locations and edges. This function minimizes complete passes over
+    the data (somewhat at the expense of readability)
+
+    rgs:
+        sqlCtx (Spark SQL Context) :  A Spark SQL context
+        table_name (string): Table name that was registered when loading the data
+        min_locs (int) : Minimum number tweets that have a location in order to infer a location for the user
+        num_partitions (int) : Optimizer for specifying the number of partitions for the resulting
+            RDD to use.
+        dispersion_threhold (int) : A distance threhold on the dispersion of the estimated location for a user.
+            We consider those estimated points with dispersion greater than the treshold unable to be
+            predicted given how dispersed the tweet distances are from one another.
+
+    Returns:
+        locations (rdd of LocEstimate) : Found locations of users. This rdd is often used as the ground truth of locations
+        edges (rdd (src_id, (dest_id, weight))) : edges loaded from the table
+
+    '''
+    collapesed_rows = sqlCtx.sql('select user.id_str, geo.coordinates as geo, place.bounding_box.coordinates as place, \
+        place.place_type as place_type, entities.user_mentions.id_str as mentions from %s \
+        where geo.coordinates is not null and \
+        (size(place.bounding_box.coordinates) > 0 or size(entities.user_mentions) > 0)'%table_name )\
+            .map(lambda row: (long(row.id_str), row))\
+            .groupByKey()\
+            .mapValues(lambda rows: collapse_rows(rows, min_locs, dispersion_threshold))
+
+    known_locs = collapesed_rows.flatMap(lambda (id_str, geo_mention): \
+                                             [(id_str, geo_mention[0])] if geo_mention[0] is not None else [])\
+                                            .coalesce(num_partitions).cache()
+
+
+    tmp_edges = collapesed_rows.flatMap(lambda (src_id, (pos,mentions)): \
+                                            [((src_id, dst_id), mentions[dst_id]) for dst_id in mentions])
+
+    edge_list = tmp_edges.map(lambda ((src_id,dest_id),num_mentions): ((dest_id,src_id),num_mentions))\
+            .join(tmp_edges)\
+                .map(lambda ((src_id,dest_id), (count0, count1)): (src_id, (dest_id, min(count0,count1))))\
+                .coalesce(num_partitions).cache()
+
+    return (known_locs, edge_list)
 
 def get_known_locs(sqlCtx, table_name, include_places=True,  min_locs=3, num_partitions=30, dispersion_threshold=50):
     '''
